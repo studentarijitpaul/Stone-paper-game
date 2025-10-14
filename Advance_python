@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""
+Stone-Paper-Scissors (advanced) — Python 3.8+
+
+ADVANCED FEATURES:
+- Enum and dataclass usage for clarity
+- Multiple CPU strategies (random, weighted, adaptive learning)
+- Best-of-n series, CLI flags via argparse
+- Clean separation of game logic for unit testing
+- Detailed docstrings and labeled sections for readability
+"""
+
+from __future__ import annotations
+import random
+import argparse
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Dict, List, Tuple, Callable, Optional
+
+# =========================
+# ADVANCED: Domain Models
+# =========================
+class Move(Enum):
+    STONE = "stone"  # aka rock
+    PAPER = "paper"
+    SCISSORS = "scissors"
+
+    @staticmethod
+    def from_str(s: str) -> Optional["Move"]:
+        mapping = {
+            "s": Move.STONE,
+            "stone": Move.STONE,
+            "r": Move.STONE,  # r for rock (compat)
+            "p": Move.PAPER,
+            "paper": Move.PAPER,
+            "sc": Move.SCISSORS,
+            "scissors": Move.SCISSORS,
+            "x": None,  # for quit sentinel if used
+        }
+        return mapping.get(s.strip().lower())
+
+    def beats(self, other: "Move") -> bool:
+        return (
+            (self is Move.STONE and other is Move.SCISSORS) or
+            (self is Move.PAPER and other is Move.STONE) or
+            (self is Move.SCISSORS and other is Move.PAPER)
+        )
+
+# =========================
+# ADVANCED: Game Results
+# =========================
+class RoundResult(Enum):
+    WIN = auto()
+    LOSE = auto()
+    DRAW = auto()
+
+# =========================
+# ADVANCED: Player & Strategy
+# =========================
+@dataclass
+class Player:
+    name: str
+    is_human: bool = True
+    strategy: Optional["Strategy"] = None  # CPU players have strategies
+    history: List[Move] = field(default_factory=list)
+
+    def choose(self, opponent: Optional["Player"] = None) -> Optional[Move]:
+        """Return chosen Move. Human players should be handled externally."""
+        if self.is_human:
+            raise RuntimeError("Human player choice should be prompted externally.")
+        if not self.strategy:
+            raise RuntimeError("CPU player has no strategy.")
+        move = self.strategy.next_move(self, opponent)
+        self.history.append(move)
+        return move
+
+# Strategy protocol
+class Strategy:
+    def next_move(self, self_player: Player, opponent: Optional[Player]) -> Move:
+        raise NotImplementedError
+
+# =========================
+# ADVANCED: CPU Strategies
+# =========================
+class RandomStrategy(Strategy):
+    def next_move(self, self_player: Player, opponent: Optional[Player]) -> Move:
+        return random.choice(list(Move))
+
+class WeightedStrategy(Strategy):
+    """CPU prefers a move with given weights. weights is dict Move->weight (0..1)."""
+    def __init__(self, weights: Optional[Dict[Move, float]] = None):
+        if weights is None:
+            weights = {Move.STONE: 0.4, Move.PAPER: 0.3, Move.SCISSORS: 0.3}
+        self.weights = weights
+
+    def next_move(self, self_player: Player, opponent: Optional[Player]) -> Move:
+        moves = list(self.weights.keys())
+        probs = [self.weights[m] for m in moves]
+        # Normalize just in case
+        s = sum(probs)
+        probs = [p / s for p in probs]
+        return random.choices(moves, probs, k=1)[0]
+
+class LearningStrategy(Strategy):
+    """
+    Very simple learning: track opponent history and bias toward moves that beat the opponent's most
+    frequent move.
+    """
+    def __init__(self, exploration: float = 0.2):
+        self.exploration = exploration  # chance to explore random move
+
+    def next_move(self, self_player: Player, opponent: Optional[Player]) -> Move:
+        if opponent is None or not opponent.history or random.random() < self.exploration:
+            return random.choice(list(Move))
+        # find most frequent opponent move
+        freq: Dict[Move, int] = {}
+        for m in opponent.history:
+            freq[m] = freq.get(m, 0) + 1
+        most_common = max(freq.items(), key=lambda kv: kv[1])[0]
+        # choose a move that beats the most_common
+        if most_common is Move.STONE:
+            return Move.PAPER
+        if most_common is Move.PAPER:
+            return Move.SCISSORS
+        return Move.STONE
+
+# =========================
+# ADVANCED: Core Game Logic
+# =========================
+def evaluate_round(p1_move: Move, p2_move: Move) -> RoundResult:
+    """Return RoundResult from perspective of player1."""
+    if p1_move is p2_move:
+        return RoundResult.DRAW
+    if p1_move.beats(p2_move):
+        return RoundResult.WIN
+    return RoundResult.LOSE
+
+@dataclass
+class Scoreboard:
+    p1_score: int = 0
+    p2_score: int = 0
+    draws: int = 0
+
+    def record(self, result: RoundResult):
+        if result is RoundResult.WIN:
+            self.p1_score += 1
+        elif result is RoundResult.LOSE:
+            self.p2_score += 1
+        else:
+            self.draws += 1
+
+    def leader(self) -> str:
+        if self.p1_score > self.p2_score:
+            return "Player 1"
+        if self.p2_score > self.p1_score:
+            return "Player 2"
+        return "Tie"
+
+# =========================
+# ADVANCED: I/O Helpers
+# =========================
+def prompt_human_move(prompt_text: str = "Choose [s]tone/[p]aper/[sc]issors: ") -> Move:
+    while True:
+        raw = input(prompt_text).strip().lower()
+        mv = Move.from_str(raw)
+        if mv is None:
+            print("Invalid input. Acceptable: s, stone, r (rock), p, paper, sc, scissors.")
+            continue
+        return mv
+
+# =========================
+# ADVANCED: Game Runner
+# =========================
+def play_series(player1: Player, player2: Player, best_of: int = 3, verbose: bool = True) -> Scoreboard:
+    """Play a best-of-n series. best_of must be odd and >=1."""
+    if best_of < 1 or best_of % 2 == 0:
+        raise ValueError("best_of must be an odd integer >= 1")
+    rounds_needed = (best_of // 2) + 1
+    scoreboard = Scoreboard()
+    round_no = 0
+    while scoreboard.p1_score < rounds_needed and scoreboard.p2_score < rounds_needed:
+        round_no += 1
+        # get moves
+        if player1.is_human:
+            p1_move = prompt_human_move(f"[Round {round_no}] {player1.name} - enter move: ")
+            player1.history.append(p1_move)
+        else:
+            p1_move = player1.choose(opponent=player2)
+        if player2.is_human:
+            p2_move = prompt_human_move(f"[Round {round_no}] {player2.name} - enter move: ")
+            player2.history.append(p2_move)
+        else:
+            p2_move = player2.choose(opponent=player1)
+
+        result = evaluate_round(p1_move, p2_move)
+        scoreboard.record(result)
+
+        if verbose:
+            print(f"Round {round_no}: {player1.name} played {p1_move.value}, {player2.name} played {p2_move.value}.")
+            if result is RoundResult.WIN:
+                print(f"  -> {player1.name} wins the round.")
+            elif result is RoundResult.LOSE:
+                print(f"  -> {player2.name} wins the round.")
+            else:
+                print("  -> Round is a draw.")
+            print(f"  Score: {player1.name} {scoreboard.p1_score} — {player2.name} {scoreboard.p2_score} (Draws: {scoreboard.draws})")
+            print("-" * 40)
+
+    if verbose:
+        print(f"Series finished. Winner: {player1.name if scoreboard.p1_score>scoreboard.p2_score else player2.name}")
+    return scoreboard
+
+# =========================
+# ADVANCED: CLI & Entrypoint
+# =========================
+def build_cpu(strategy_name: str, name: str = "CPU") -> Player:
+    strat_name = strategy_name.lower()
+    if strat_name == "random":
+        strat = RandomStrategy()
+    elif strat_name == "weighted":
+        strat = WeightedStrategy()
+    elif strat_name == "learning":
+        strat = LearningStrategy()
+    else:
+        raise ValueError(f"Unknown CPU strategy: {strategy_name}")
+    return Player(name=name, is_human=False, strategy=strat)
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Stone-Paper-Scissors (advanced) - play human vs CPU or human vs human.")
+    p.add_argument("--mode", choices=["human-vs-cpu", "human-vs-human", "cpu-vs-cpu"], default="human-vs-cpu")
+    p.add_argument("--best-of", type=int, default=3, help="Best of N (must be odd). Default 3.")
+    p.add_argument("--cpu-strategy", choices=["random", "weighted", "learning"], default="random",
+                   help="Strategy for CPU when applicable.")
+    p.add_argument("--no-verbose", dest="verbose", action="store_false", help="Turn off verbose round output.")
+    return p.parse_args()
+
+def main():
+    args = parse_args()
+    bo = args.best_of
+    if bo < 1 or bo % 2 == 0:
+        print("best-of must be an odd integer >= 1. Using default 3.")
+        bo = 3
+
+    if args.mode == "human-vs-cpu":
+        human = Player(name="You", is_human=True)
+        cpu = build_cpu(args.cpu_strategy, name="CPU")
+        print(f"Starting Human vs CPU ({args.cpu_strategy}) — Best of {bo}")
+        play_series(human, cpu, best_of=bo, verbose=args.verbose)
+
+    elif args.mode == "human-vs-human":
+        p1 = Player(name="Player 1", is_human=True)
+        p2 = Player(name="Player 2", is_human=True)
+        print(f"Starting Human vs Human — Best of {bo}")
+        play_series(p1, p2, best_of=bo, verbose=args.verbose)
+
+    else:  # cpu-vs-cpu
+        cpu1 = build_cpu(args.cpu_strategy, name="CPU-1")
+        cpu2 = build_cpu("learning", name="CPU-2")  # example: mix strategies
+        print(f"Starting CPU vs CPU ({args.cpu_strategy} vs learning) — Best of {bo}")
+        final = play_series(cpu1, cpu2, best_of=bo, verbose=args.verbose)
+        print("Final scoreboard:", final)
+
+if __name__ == "__main__":
+    main()
