@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Stone-Paper-Scissors (advanced) — Python 3.8+
+Stone-Paper-Scissors (advanced)
 
 ADVANCED FEATURES:
 - Enum and dataclass usage for clarity
